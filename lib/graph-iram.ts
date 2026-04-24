@@ -57,7 +57,7 @@ export async function getDriveContext(): Promise<DriveContext> {
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const drives = await drivesRes.json();
-  const drive = drives.value?.find((d: { name: string }) => d.name === LIBRARY_NAME);
+  const drive = drives.value?.find((d: { name: string }) => d.name.toLowerCase() === LIBRARY_NAME.toLowerCase());
   if (!drive) {
     const names = drives.value?.map((d: { name: string }) => d.name).join(', ');
     throw new Error(`iRAM: library "${LIBRARY_NAME}" not found. Available: ${names}`);
