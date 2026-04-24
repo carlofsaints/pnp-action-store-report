@@ -9,6 +9,7 @@ type Stage = 'idle' | 'parsed' | 'processing' | 'done' | 'error';
 interface LoadedFile {
   info: FileInfo;
   rows: RawRow[];
+  rawFile: File; // keep original for re-sending to /api/process
 }
 
 // ── Tiny UI helpers ──────────────────────────────────────────────────────────
@@ -91,45 +92,66 @@ export default function Home() {
     setUploadProgress(null);
     setErrorMsg(null);
 
-    try {
-      // Parse files one at a time to stay under Vercel body limit
-      for (let i = 0; i < fileArr.length; i++) {
-        const file = fileArr[i];
-        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
+    const fileErrors: string[] = [];
+    let anySuccess = false;
 
+    // Parse files one at a time — failures skip that file, not the whole batch
+    for (let i = 0; i < fileArr.length; i++) {
+      const file = fileArr[i];
+      setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
+
+      try {
         const fd = new FormData();
         fd.append('files', file);
 
         const res = await fetch('/api/parse', { method: 'POST', body: fd });
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(`Parse error for "${file.name}" (${res.status}): ${text.slice(0, 300)}`);
+          let msg = `${file.name}: ${text.slice(0, 200)}`;
+          try { const j = JSON.parse(text); if (j.error) msg = `${file.name}: ${j.error}`; } catch { /* use raw */ }
+          fileErrors.push(msg);
+          continue;
         }
 
         const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string };
+
+        if (!data.files[0] || data.allRows.length === 0) {
+          fileErrors.push(`${file.name}: No data rows found`);
+          continue;
+        }
 
         // Append to state — check for duplicate filenames
         setLoadedFiles(prev => {
           const existing = prev.map(f => f.info.fileName);
           const isDup = existing.includes(data.files[0]?.fileName);
-          if (isDup) return prev; // skip duplicate
-          return [...prev, { info: data.files[0], rows: data.allRows }];
+          if (isDup) {
+            fileErrors.push(`${file.name}: Duplicate — already loaded`);
+            return prev;
+          }
+          return [...prev, { info: data.files[0], rows: data.allRows, rawFile: file }];
         });
 
-        // Set report date from first file if not already set
-        if (i === 0 && !reportDateOverride && data.reportDate) {
+        anySuccess = true;
+
+        // Set report date from first successful file if not already set
+        if (!reportDateOverride && data.reportDate) {
           setReportDateOverride(data.reportDate);
         }
+      } catch (e) {
+        fileErrors.push(`${file.name}: ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
-
-      setStage('parsed');
-    } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : 'Upload failed');
-      setStage('error');
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(null);
     }
+
+    if (anySuccess) {
+      setStage('parsed');
+    }
+
+    if (fileErrors.length > 0) {
+      setErrorMsg(`${fileErrors.length} file(s) skipped:\n${fileErrors.join('\n')}`);
+    }
+
+    setIsUploading(false);
+    setUploadProgress(null);
   }, [reportDateOverride]);
 
   // ── Remove a single file ──────────────────────────────────────────────────
@@ -168,22 +190,25 @@ export default function Home() {
   // ── Process ──────────────────────────────────────────────────────────────
 
   const handleProcess = async () => {
-    if (allRows.length === 0) return;
+    if (loadedFiles.length === 0) return;
 
     setStage('processing');
     setErrorMsg(null);
 
     try {
+      // Send raw files via FormData — avoids JSON payload size limit
+      const fd = new FormData();
+      for (const lf of loadedFiles) {
+        fd.append('files', lf.rawFile);
+      }
+      fd.append('reportDate', reportDate);
+      fd.append('phantomWeeksReceived', String(phantomWeeksReceived));
+      fd.append('phantomWeeksSold', String(phantomWeeksSold));
+      fd.append('actionMode', actionMode);
+
       const res = await fetch('/api/process', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          allRows,
-          reportDate,
-          phantomWeeksReceived,
-          phantomWeeksSold,
-          actionMode,
-        }),
+        body: fd,
       });
 
       if (!res.ok) {
@@ -450,7 +475,7 @@ export default function Home() {
             )}
 
             {errorMsg && (
-              <div className="mt-4 bg-danger/10 border border-danger/30 text-danger rounded-lg px-4 py-3 text-sm">
+              <div className="mt-4 bg-warning/10 border border-warning/30 text-warning rounded-lg px-4 py-3 text-sm whitespace-pre-line">
                 {errorMsg}
               </div>
             )}

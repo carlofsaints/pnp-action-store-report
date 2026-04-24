@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { Resend } from 'resend';
 import * as XLSX from 'xlsx';
+import { parseVendorFile } from '@/lib/excel-parser';
 import { buildStoreReport, computeRankings } from '@/lib/report-builder';
 import { buildStoreEmail } from '@/lib/email-builder';
 import { getDriveContext, uploadReport, downloadFile } from '@/lib/graph-iram';
-import type { RawRow, ControlEntry, ProcessSummary, StoreResult, ProcessRequest } from '@/lib/types';
+import type { RawRow, ControlEntry, ProcessSummary, StoreResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 min for large batches
@@ -25,7 +26,6 @@ async function loadControlFile(): Promise<Map<string, ControlEntry>> {
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
 
     for (const r of rows) {
-      // Case-insensitive column matching
       const get = (target: string): string => {
         const key = Object.keys(r).find(k => k.trim().toLowerCase() === target.toLowerCase());
         return key ? String(r[key] ?? '').trim() : '';
@@ -43,7 +43,6 @@ async function loadControlFile(): Promise<Map<string, ControlEntry>> {
     }
   } catch (e) {
     console.error('Control file load error:', e);
-    // Return empty map — processing continues without emails
   }
   return map;
 }
@@ -87,29 +86,51 @@ function countMissing(storeRows: RawRow[], allRows: RawRow[]): number {
   return count;
 }
 
-// ── Main handler ────────────────────────────────────────────────────────────
+// ── Main handler — receives FormData with raw files ─────────────────────────
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as ProcessRequest;
-    const { allRows, reportDate, phantomWeeksReceived, phantomWeeksSold, actionMode } = body;
+    const formData = await req.formData();
+    const files = formData.getAll('files') as File[];
+    const reportDate = formData.get('reportDate') as string || new Date().toISOString().split('T')[0];
+    const phantomWeeksReceived = Number(formData.get('phantomWeeksReceived')) || 4;
+    const phantomWeeksSold = Number(formData.get('phantomWeeksSold')) || 4;
+    const actionMode = (formData.get('actionMode') as string) || 'both';
 
-    if (!allRows || allRows.length === 0) {
-      return NextResponse.json({ error: 'No rows provided' }, { status: 400 });
+    if (files.length === 0) {
+      return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+    }
+
+    // Re-parse all files server-side
+    const allRows: RawRow[] = [];
+    const parseErrors: string[] = [];
+
+    for (const file of files) {
+      try {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const { rows } = parseVendorFile(buffer, file.name);
+        allRows.push(...rows);
+      } catch (e) {
+        parseErrors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    if (allRows.length === 0) {
+      return NextResponse.json({ error: `No data rows from any file. Errors: ${parseErrors.join('; ')}` }, { status: 400 });
     }
 
     // Compute global rankings
     const rankings = computeRankings(allRows);
 
     const storeResults: StoreResult[] = [];
-    const errors: string[] = [];
+    const errors: string[] = [...parseErrors];
 
     // Load control file (for email mode)
     const controlMap = (actionMode === 'sharepoint')
       ? new Map<string, ControlEntry>()
       : await loadControlFile();
 
-    // Get SP context once (for sharepoint mode)
+    // Get SP context once
     let spCtx: Awaited<ReturnType<typeof getDriveContext>> | null = null;
     if (actionMode !== 'email') {
       try {
