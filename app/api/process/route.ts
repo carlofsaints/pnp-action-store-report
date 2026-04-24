@@ -160,7 +160,8 @@ export async function POST(req: Request) {
         });
         reportsGenerated++;
 
-        const fileName = `${siteCode} - ${storeName.replace(/[/\\?%*:|"<>]/g, '_')}.xlsx`;
+        const safeStore = storeName.replace(/[/\\?%*:|"<>]/g, '_');
+        const fileName = `PNP - ${siteCode} - ${safeStore} - ${reportDate}.xlsx`;
 
         // Upload to SharePoint
         if (actionMode !== 'email' && spCtx) {
