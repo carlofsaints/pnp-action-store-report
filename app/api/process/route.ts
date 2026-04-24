@@ -101,6 +101,9 @@ export async function POST(req: Request) {
     // Compute global rankings
     const rankings = computeRankings(allRows);
 
+    const storeResults: StoreResult[] = [];
+    const errors: string[] = [];
+
     // Load control file (for email mode)
     const controlMap = (actionMode === 'sharepoint')
       ? new Map<string, ControlEntry>()
@@ -112,7 +115,9 @@ export async function POST(req: Request) {
       try {
         spCtx = await getDriveContext();
       } catch (e) {
-        console.error('SP context error:', e);
+        const msg = `SharePoint connection failed: ${e instanceof Error ? e.message : String(e)}`;
+        console.error(msg);
+        errors.push(msg);
       }
     }
 
@@ -124,9 +129,6 @@ export async function POST(req: Request) {
     }
 
     const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-
-    const storeResults: StoreResult[] = [];
-    const errors: string[] = [];
     let emailsSent = 0;
     let spUploaded = 0;
     let reportsGenerated = 0;

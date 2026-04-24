@@ -1,9 +1,15 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import type { FileInfo, ParseResponse, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
+import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
 type Stage = 'idle' | 'parsed' | 'processing' | 'done' | 'error';
+
+/** One parsed file's data, kept separately so we can remove individual files */
+interface LoadedFile {
+  info: FileInfo;
+  rows: RawRow[];
+}
 
 // ── Tiny UI helpers ──────────────────────────────────────────────────────────
 
@@ -31,8 +37,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>('idle');
-  const [parseResult, setParseResult] = useState<ParseResponse | null>(null);
-  const [allRows, setAllRows] = useState<RawRow[]>([]);
+  const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [processSummary, setProcessSummary] = useState<ProcessSummary | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -47,7 +52,34 @@ export default function Home() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── File upload + parse ──────────────────────────────────────────────────
+  // ── Derived from accumulated files ────────────────────────────────────────
+
+  const allRows = loadedFiles.flatMap(f => f.rows);
+  const allFileInfos = loadedFiles.map(f => f.info);
+  const hasFiles = loadedFiles.length > 0;
+
+  const totalRows = allRows.length;
+  const uniqueStores = new Set(allRows.map(r => r.siteCode)).size;
+  const uniqueVendors = new Set(allRows.map(r => r.vendorName)).size;
+  const uniqueProducts = new Set(allRows.map(r => r.articleNumber)).size;
+  const reportDate = reportDateOverride || allFileInfos[0]?.reportDate || '';
+
+  const vendorBreakdown = hasFiles
+    ? (() => {
+        const map = new Map<string, { vendorNum: string; products: Set<string>; rows: number }>();
+        for (const r of allRows) {
+          if (!map.has(r.vendorName)) map.set(r.vendorName, { vendorNum: r.vendorNumber, products: new Set(), rows: 0 });
+          const v = map.get(r.vendorName)!;
+          v.products.add(r.articleNumber);
+          v.rows++;
+        }
+        return [...map.entries()].map(([name, v]) => ({
+          vendorName: name, vendorNumber: v.vendorNum, products: v.products.size, rows: v.rows,
+        }));
+      })()
+    : [];
+
+  // ── File upload + parse (APPENDS to existing files) ───────────────────────
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
     const fileArr = Array.from(files).filter(
@@ -60,22 +92,36 @@ export default function Home() {
     setErrorMsg(null);
 
     try {
-      setUploadProgress(`Parsing ${fileArr.length} file(s)...`);
-      const fd = new FormData();
-      for (const file of fileArr) {
+      // Parse files one at a time to stay under Vercel body limit
+      for (let i = 0; i < fileArr.length; i++) {
+        const file = fileArr[i];
+        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
+
+        const fd = new FormData();
         fd.append('files', file);
+
+        const res = await fetch('/api/parse', { method: 'POST', body: fd });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`Parse error for "${file.name}" (${res.status}): ${text.slice(0, 300)}`);
+        }
+
+        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string };
+
+        // Append to state — check for duplicate filenames
+        setLoadedFiles(prev => {
+          const existing = prev.map(f => f.info.fileName);
+          const isDup = existing.includes(data.files[0]?.fileName);
+          if (isDup) return prev; // skip duplicate
+          return [...prev, { info: data.files[0], rows: data.allRows }];
+        });
+
+        // Set report date from first file if not already set
+        if (i === 0 && !reportDateOverride && data.reportDate) {
+          setReportDateOverride(data.reportDate);
+        }
       }
 
-      const res = await fetch('/api/parse', { method: 'POST', body: fd });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Parse error (${res.status}): ${text.slice(0, 300)}`);
-      }
-
-      const data = await res.json() as ParseResponse;
-      setParseResult(data);
-      setAllRows(data.allRows);
-      setReportDateOverride(data.reportDate);
       setStage('parsed');
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : 'Upload failed');
@@ -84,7 +130,28 @@ export default function Home() {
       setIsUploading(false);
       setUploadProgress(null);
     }
-  }, []);
+  }, [reportDateOverride]);
+
+  // ── Remove a single file ──────────────────────────────────────────────────
+
+  const removeFile = (fileName: string) => {
+    setLoadedFiles(prev => {
+      const updated = prev.filter(f => f.info.fileName !== fileName);
+      if (updated.length === 0) {
+        setStage('idle');
+        setReportDateOverride('');
+      }
+      return updated;
+    });
+  };
+
+  const clearAll = () => {
+    setLoadedFiles([]);
+    setStage('idle');
+    setProcessSummary(null);
+    setErrorMsg(null);
+    setReportDateOverride('');
+  };
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -101,7 +168,7 @@ export default function Home() {
   // ── Process ──────────────────────────────────────────────────────────────
 
   const handleProcess = async () => {
-    if (!parseResult || allRows.length === 0) return;
+    if (allRows.length === 0) return;
 
     setStage('processing');
     setErrorMsg(null);
@@ -112,7 +179,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           allRows,
-          reportDate: reportDateOverride || parseResult.reportDate,
+          reportDate,
           phantomWeeksReceived,
           phantomWeeksSold,
           actionMode,
@@ -133,23 +200,6 @@ export default function Home() {
     }
   };
 
-  // ── Derived data ──────────────────────────────────────────────────────────
-
-  const vendorBreakdown = parseResult
-    ? (() => {
-        const map = new Map<string, { vendorNum: string; products: Set<string>; rows: number }>();
-        for (const r of allRows) {
-          if (!map.has(r.vendorName)) map.set(r.vendorName, { vendorNum: r.vendorNumber, products: new Set(), rows: 0 });
-          const v = map.get(r.vendorName)!;
-          v.products.add(r.articleNumber);
-          v.rows++;
-        }
-        return [...map.entries()].map(([name, v]) => ({
-          vendorName: name, vendorNumber: v.vendorNum, products: v.products.size, rows: v.rows,
-        }));
-      })()
-    : [];
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -164,9 +214,9 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          {stage === 'parsed' && (
+          {hasFiles && stage === 'parsed' && (
             <span className="bg-accent/10 text-accent border border-accent/30 text-xs px-3 py-1 rounded-full">
-              Files Loaded
+              {loadedFiles.length} file{loadedFiles.length !== 1 ? 's' : ''} loaded
             </span>
           )}
           {stage === 'processing' && (
@@ -189,7 +239,8 @@ export default function Home() {
         {/* ── Section 1: Upload Files ── */}
         <Section title="1 — Upload Vendor Files">
           <p className="text-muted text-xs mb-3">
-            Upload one or more PnP Portal SDC export files (Excel). File naming: <code>VENDOR_NAME SDC YYYY-MM-DD.xlsx</code>
+            Upload PnP Portal SDC export files one at a time or in batches. Each upload adds to the dataset.
+            File naming: <code>VENDOR_NAME SDC YYYY-MM-DD.xlsx</code>
           </p>
           <div
             onDrop={onDrop}
@@ -212,40 +263,55 @@ export default function Home() {
               <p className="text-accent animate-pulse">{uploadProgress ?? 'Parsing files...'}</p>
             ) : (
               <>
-                <p className="text-foreground font-medium">Drop Excel files here or click to browse</p>
-                <p className="text-muted text-sm mt-1">Accepts multiple .xlsx files &mdash; one per vendor</p>
+                <p className="text-foreground font-medium">
+                  {hasFiles ? 'Drop more files here or click to add' : 'Drop Excel files here or click to browse'}
+                </p>
+                <p className="text-muted text-sm mt-1">Accepts .xlsx files &mdash; one per vendor</p>
               </>
             )}
           </div>
 
-          {/* File list after parse */}
-          {parseResult && parseResult.files.length > 0 && (
+          {/* File list — with remove buttons */}
+          {loadedFiles.length > 0 && (
             <div className="mt-4 space-y-2">
-              {parseResult.files.map((f: FileInfo, i: number) => (
+              {loadedFiles.map((lf, i) => (
                 <div key={i} className="bg-background border border-border rounded-lg px-4 py-3 flex items-center justify-between">
-                  <div>
-                    <span className="text-foreground font-medium text-sm">{f.fileName}</span>
-                    <span className="text-accent text-xs ml-2 font-mono">{f.vendorName}</span>
+                  <div className="min-w-0">
+                    <span className="text-foreground font-medium text-sm block truncate">{lf.info.fileName}</span>
+                    <span className="text-accent text-xs font-mono">{lf.info.vendorName}</span>
                   </div>
-                  <div className="text-right text-xs text-muted">
-                    <div>{f.rowCount.toLocaleString()} rows &middot; {f.storeCount} stores &middot; {f.articleCount} articles</div>
-                    <div>Date: {f.reportDate}</div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right text-xs text-muted">
+                      <div>{lf.info.rowCount.toLocaleString()} rows &middot; {lf.info.storeCount} stores &middot; {lf.info.articleCount} articles</div>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeFile(lf.info.fileName); }}
+                      className="text-muted hover:text-danger text-lg leading-none px-1"
+                      title="Remove this file"
+                    >
+                      &times;
+                    </button>
                   </div>
                 </div>
               ))}
+              <div className="flex justify-end">
+                <button onClick={clearAll} className="text-muted text-xs hover:text-danger underline">
+                  Clear all files
+                </button>
+              </div>
             </div>
           )}
         </Section>
 
         {/* ── Section 2: Data Preview ── */}
-        {stage !== 'idle' && parseResult && (
-          <Section title="2 — Data Preview">
+        {hasFiles && (
+          <Section title="2 — Data Preview (Combined)">
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
-              <Badge label="Total Rows" value={parseResult.totalRows.toLocaleString()} />
-              <Badge label="Unique Stores" value={parseResult.uniqueStores} />
-              <Badge label="Unique Vendors" value={parseResult.uniqueVendors} />
-              <Badge label="Unique Products" value={parseResult.uniqueProducts} />
-              <Badge label="Report Date" value={parseResult.reportDate} />
+              <Badge label="Total Rows" value={totalRows.toLocaleString()} />
+              <Badge label="Unique Stores" value={uniqueStores} />
+              <Badge label="Unique Vendors" value={uniqueVendors} />
+              <Badge label="Unique Products" value={uniqueProducts} />
+              <Badge label="Report Date" value={reportDate || '—'} />
             </div>
 
             {vendorBreakdown.length > 0 && (
@@ -276,7 +342,7 @@ export default function Home() {
         )}
 
         {/* ── Section 3: Settings ── */}
-        {stage !== 'idle' && (
+        {hasFiles && (
           <Section title="3 — Settings">
             <div className="space-y-5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -337,7 +403,7 @@ export default function Home() {
         )}
 
         {/* ── Section 4: Control File Preview ── */}
-        {stage === 'parsed' && (
+        {hasFiles && stage !== 'done' && (
           <Section title="4 — Control File">
             <p className="text-muted text-xs mb-2">
               The control file is auto-fetched from iRam SharePoint when processing begins.
@@ -353,24 +419,24 @@ export default function Home() {
         )}
 
         {/* ── Section 5: Process & Send ── */}
-        {(stage === 'parsed' || stage === 'processing' || stage === 'done' || stage === 'error') && (
+        {hasFiles && (
           <Section title="5 — Process &amp; Send">
             {stage !== 'done' && (
               <button
                 onClick={() => { void handleProcess(); }}
-                disabled={stage === 'processing' || !parseResult}
+                disabled={stage === 'processing' || allRows.length === 0}
                 className="w-full font-bold py-3 px-6 rounded-lg transition-colors text-sm text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: stage === 'processing' || !parseResult ? undefined : '#7CC042' }}
+                style={{ background: stage === 'processing' || allRows.length === 0 ? undefined : '#7CC042' }}
                 onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = '#6aad36'; }}
                 onMouseLeave={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.background = '#7CC042'; }}
               >
                 {stage === 'processing'
                   ? 'Processing...'
                   : actionMode === 'sharepoint'
-                  ? 'Generate & Upload to SharePoint'
+                  ? `Generate & Upload ${uniqueStores} Store Reports to SharePoint`
                   : actionMode === 'email'
-                  ? 'Generate & Email Reports'
-                  : 'Generate, Upload & Email Reports'}
+                  ? `Generate & Email ${uniqueStores} Store Reports`
+                  : `Generate, Upload & Email ${uniqueStores} Store Reports`}
               </button>
             )}
 
@@ -443,14 +509,7 @@ export default function Home() {
                 )}
 
                 <button
-                  onClick={() => {
-                    setStage('idle');
-                    setParseResult(null);
-                    setAllRows([]);
-                    setProcessSummary(null);
-                    setErrorMsg(null);
-                    setReportDateOverride('');
-                  }}
+                  onClick={clearAll}
                   className="text-muted text-sm hover:text-accent underline"
                 >
                   Start a new batch
