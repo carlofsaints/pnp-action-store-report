@@ -344,7 +344,7 @@ export default function Home() {
               It maps Site Codes to rep names/emails for email distribution.
             </p>
             <p className="text-muted text-xs">
-              Expected path: <code>{`PNP ACTION STORE REPORTS/Control File.xlsx`}</code>
+              Expected path: <code>{`PNP ACTION STORE REPORTS (MULTI VENDOR)/CONTROL FILES/iRam PNP REP STORE ALLOCATION.xlsx`}</code>
             </p>
             <p className="text-muted text-xs mt-1">
               Columns: <code>Site Code</code>, <code>Site Name</code>, <code>Channel</code>, <code>Rep Email</code>, <code>Rep Name</code>

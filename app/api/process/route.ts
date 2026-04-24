@@ -9,7 +9,7 @@ import type { RawRow, ControlEntry, ProcessSummary, StoreResult, ProcessRequest 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 min for large batches
 
-const CONTROL_FILE_PATH = process.env.PNP_CONTROL_FILE_PATH ?? 'PNP ACTION STORE REPORTS/Control File.xlsx';
+const CONTROL_FILE_PATH = process.env.PNP_CONTROL_FILE_PATH ?? 'PNP ACTION STORE REPORTS (MULTI VENDOR)/CONTROL FILES/iRam PNP REP STORE ALLOCATION.xlsx';
 
 // ── Parse control file from SP ──────────────────────────────────────────────
 

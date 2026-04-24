@@ -11,7 +11,7 @@ const CLIENT_ID = process.env.IRAM_CLIENT_ID!;
 const CLIENT_SECRET = process.env.IRAM_CLIENT_SECRET!;
 const SP_HOST = process.env.IRAM_SP_HOST ?? 'iramsa.sharepoint.com';
 const LIBRARY_NAME = process.env.IRAM_SP_LIBRARY ?? 'Instore';
-const BASE_FOLDER = process.env.PNP_BASE_FOLDER ?? 'PNP ACTION STORE REPORTS';
+const BASE_FOLDER = process.env.PNP_BASE_FOLDER ?? 'PNP ACTION STORE REPORTS (MULTI VENDOR)';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
