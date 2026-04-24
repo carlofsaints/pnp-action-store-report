@@ -32,12 +32,13 @@ async function loadControlFile(): Promise<Map<string, ControlEntry>> {
       };
 
       const siteCode = get('Site Code');
+      const siteName = get('Site Name');
+      const channel = get('Channel');
       const repName = get('Rep Name');
-      const repSurname = get('Rep Surname');
       const repEmail = get('Rep Email');
 
       if (siteCode) {
-        map.set(siteCode, { siteCode, repName, repSurname, repEmail });
+        map.set(siteCode, { siteCode, siteName, channel, repName, repEmail });
       }
     }
   } catch (e) {
@@ -180,7 +181,7 @@ export async function POST(req: Request) {
           if (ctrl && ctrl.repEmail) {
             result.repEmail = ctrl.repEmail;
             const rank = rankings.overallRanks.get(siteCode);
-            const repFullName = [ctrl.repName, ctrl.repSurname].filter(Boolean).join(' ');
+            const repFullName = ctrl.repName;
 
             try {
               const html = buildStoreEmail({

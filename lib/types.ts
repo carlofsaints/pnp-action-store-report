@@ -45,8 +45,9 @@ export interface ParseResponse {
 /** A rep entry from the control file */
 export interface ControlEntry {
   siteCode: string;
+  siteName: string;
+  channel: string;
   repName: string;
-  repSurname: string;
   repEmail: string;
 }
 

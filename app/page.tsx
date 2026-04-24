@@ -347,7 +347,7 @@ export default function Home() {
               Expected path: <code>{`PNP ACTION STORE REPORTS/Control File.xlsx`}</code>
             </p>
             <p className="text-muted text-xs mt-1">
-              Columns: <code>Site Code</code>, <code>Rep Name</code>, <code>Rep Surname</code>, <code>Rep Email</code>
+              Columns: <code>Site Code</code>, <code>Site Name</code>, <code>Channel</code>, <code>Rep Email</code>, <code>Rep Name</code>
             </p>
           </Section>
         )}
