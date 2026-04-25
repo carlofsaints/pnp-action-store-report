@@ -11,11 +11,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       body,
       request: req,
       onBeforeGenerateToken: async () => ({
-        allowedContentTypes: [
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'application/vnd.ms-excel',
-          'application/octet-stream',
-        ],
+        // No content-type restriction — browsers send varying MIME types for .xlsx
         maximumSizeInBytes: 100 * 1024 * 1024, // 100MB
       }),
       onUploadCompleted: async () => {
