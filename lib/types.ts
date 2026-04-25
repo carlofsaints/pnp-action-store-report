@@ -29,6 +29,7 @@ export interface FileInfo {
   storeCount: number;
   articleCount: number;
   reportDate: string;           // YYYY-MM-DD from filename
+  warning?: string;             // e.g. "Empty file — no data rows"
 }
 
 /** Response from POST /api/parse */

@@ -5,6 +5,8 @@ import { parseVendorFile } from '@/lib/excel-parser';
 import { buildStoreReport, computeRankings } from '@/lib/report-builder';
 import { buildStoreEmail } from '@/lib/email-builder';
 import { getDriveContext, uploadReport, downloadFile } from '@/lib/graph-iram';
+import { findUserById } from '@/lib/userData';
+import { appendAuditEntry, type AuditEntry } from '@/lib/auditData';
 import type { RawRow, ControlEntry, ProcessSummary, StoreResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -89,7 +91,12 @@ function countMissing(storeRows: RawRow[], allRows: RawRow[]): number {
 // ── Main handler — receives FormData with raw files ─────────────────────────
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
   try {
+    // Extract user from auth header
+    const userId = req.headers.get('x-user-id');
+    const user = userId ? await findUserById(userId) : null;
+
     const formData = await req.formData();
     const files = formData.getAll('files') as File[];
     const reportDate = formData.get('reportDate') as string || new Date().toISOString().split('T')[0];
@@ -104,12 +111,14 @@ export async function POST(req: Request) {
     // Re-parse all files server-side
     const allRows: RawRow[] = [];
     const parseErrors: string[] = [];
+    const filesUploaded: { fileName: string; vendorName: string; rowCount: number }[] = [];
 
     for (const file of files) {
       try {
         const buffer = Buffer.from(await file.arrayBuffer());
-        const { rows } = parseVendorFile(buffer, file.name);
+        const { rows, info } = parseVendorFile(buffer, file.name);
         allRows.push(...rows);
+        filesUploaded.push({ fileName: info.fileName, vendorName: info.vendorName, rowCount: info.rowCount });
       } catch (e) {
         parseErrors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -260,6 +269,34 @@ export async function POST(req: Request) {
       errors,
       storeResults,
     };
+
+    // Write audit entry (best-effort — don't fail the response if audit write fails)
+    if (user) {
+      try {
+        const auditEntry: AuditEntry = {
+          id: `audit-${Date.now().toString(36)}`,
+          userId: user.id,
+          userName: user.name,
+          userEmail: user.email,
+          timestamp: new Date().toISOString(),
+          filesUploaded,
+          totalRows: allRows.length,
+          reportDate,
+          actionMode: actionMode as 'email' | 'sharepoint' | 'both',
+          phantomWeeksReceived,
+          phantomWeeksSold,
+          storesProcessed: storeMap.size,
+          reportsGenerated,
+          emailsSent,
+          spUploaded,
+          errors,
+          durationMs: Date.now() - startTime,
+        };
+        await appendAuditEntry(auditEntry);
+      } catch (auditErr) {
+        console.error('Audit log write failed:', auditErr);
+      }
+    }
 
     return NextResponse.json(summary, {
       headers: { 'Cache-Control': 'no-store' },

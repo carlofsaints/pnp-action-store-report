@@ -224,7 +224,14 @@ export async function buildStoreReport(params: BuildParams): Promise<Buffer> {
     vRow++;
   }
   zebraRows(ws1, vendorTableStart + 1, vRow - 1, vendorHeaders.length);
-  autoWidth(ws1);
+
+  // Fixed column widths for Menu & Overview (not autoWidth — keeps report tidy)
+  ws1.getColumn(1).width = 25;    // A — Metric / Vendor Name
+  ws1.getColumn(2).width = 10.5;  // B — Value / Vendor Number
+  ws1.getColumn(3).width = 9.5;   // C — Products
+  ws1.getColumn(4).width = 9.5;   // D — SOH > 0
+  ws1.getColumn(5).width = 9.5;   // E — SOH <= 0
+  ws1.getColumn(6).width = 9.5;   // F — Vendor Rank
 
   // ── Sheet 2: OOS (Out of Stock) ──────────────────────────────────────────
   const ws2 = wb.addWorksheet('OOS');

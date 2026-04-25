@@ -101,19 +101,37 @@ export function parseVendorFile(buffer: Buffer, filename: string): { rows: RawRo
   const sheet = wb.Sheets[sheetName];
 
   // Fix corrupt !ref — recalculate actual range from cell keys
+  // Use a loop instead of Math.min(...spread) to avoid "Maximum call stack size exceeded"
+  // on large files (100K+ cells blows the spread argument limit)
   const cellKeys = Object.keys(sheet).filter(k => !k.startsWith('!'));
   if (cellKeys.length > 0) {
-    const decoded = cellKeys.map(k => XLSX.utils.decode_cell(k));
-    const minR = Math.min(...decoded.map(d => d.r));
-    const maxR = Math.max(...decoded.map(d => d.r));
-    const minC = Math.min(...decoded.map(d => d.c));
-    const maxC = Math.max(...decoded.map(d => d.c));
+    let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+    for (const k of cellKeys) {
+      const d = XLSX.utils.decode_cell(k);
+      if (d.r < minR) minR = d.r;
+      if (d.r > maxR) maxR = d.r;
+      if (d.c < minC) minC = d.c;
+      if (d.c > maxC) maxC = d.c;
+    }
     sheet['!ref'] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
   }
 
   const jsonData = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
 
-  if (jsonData.length === 0) throw new Error(`No data rows in ${filename}`);
+  // Empty file (headers only, no data rows) — return gracefully instead of crashing
+  if (jsonData.length === 0) {
+    const info: FileInfo = {
+      fileName: filename,
+      vendorName,
+      vendorNumber: '',
+      rowCount: 0,
+      storeCount: 0,
+      articleCount: 0,
+      reportDate,
+      warning: 'Empty file — no data rows',
+    };
+    return { rows: [], info };
+  }
 
   // Validate headers — case-insensitive
   const actualHeaders = Object.keys(jsonData[0]).map(h => h.trim().toLowerCase());

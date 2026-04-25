@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+import { useAuth, authFetch } from '@/lib/useAuth';
 import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
 type Stage = 'idle' | 'parsed' | 'processing' | 'done' | 'error';
@@ -37,6 +38,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  const { session, loading: authLoading, logout } = useAuth();
   const [stage, setStage] = useState<Stage>('idle');
   const [loadedFiles, setLoadedFiles] = useState<LoadedFile[]>([]);
   const [processSummary, setProcessSummary] = useState<ProcessSummary | null>(null);
@@ -206,7 +208,7 @@ export default function Home() {
       fd.append('phantomWeeksSold', String(phantomWeeksSold));
       fd.append('actionMode', actionMode);
 
-      const res = await fetch('/api/process', {
+      const res = await authFetch('/api/process', {
         method: 'POST',
         body: fd,
       });
@@ -226,6 +228,10 @@ export default function Home() {
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  if (authLoading) {
+    return <div className="min-h-screen bg-background flex items-center justify-center text-muted">Loading...</div>;
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -253,6 +259,15 @@ export default function Home() {
             <span className="bg-success/10 text-success border border-success/30 text-xs px-3 py-1 rounded-full">
               Complete
             </span>
+          )}
+          {session && (
+            <div className="flex items-center gap-3">
+              {session.role === 'admin' && (
+                <a href="/admin" className="text-accent text-xs hover:underline">Admin</a>
+              )}
+              <span className="text-muted text-xs">{session.name}</span>
+              <button onClick={logout} className="text-muted text-xs hover:text-danger underline">Logout</button>
+            </div>
           )}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/iram-logo.png" alt="iRam" className="h-9 w-auto object-contain" />
