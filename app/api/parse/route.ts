@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { put } from '@vercel/blob';
 import { parseVendorFile } from '@/lib/excel-parser';
 import type { RawRow, FileInfo, ParseResponse } from '@/lib/types';
 
@@ -7,51 +6,32 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const formData = await req.formData();
-    const files = formData.getAll('files') as File[];
+    const { blobUrl, fileName } = (await req.json()) as { blobUrl: string; fileName: string };
 
-    if (files.length === 0) {
-      return NextResponse.json({ error: 'No files uploaded' }, { status: 400 });
+    if (!blobUrl || !fileName) {
+      return NextResponse.json({ error: 'Missing blobUrl or fileName' }, { status: 400 });
     }
 
-    const allRows: RawRow[] = [];
-    const fileInfos: FileInfo[] = [];
-    const blobUrls: string[] = [];
-    let reportDate = '';
-
-    for (const file of files) {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const { rows, info } = parseVendorFile(buffer, file.name);
-      allRows.push(...rows);
-      fileInfos.push(info);
-      if (!reportDate && info.reportDate) reportDate = info.reportDate;
-
-      // Stage file in Blob for later processing (avoids re-sending raw files)
-      const blob = await put(`staging/${Date.now()}-${file.name}`, buffer, {
-        access: 'public',
-        addRandomSuffix: false,
-        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      });
-      blobUrls.push(blob.url);
+    // Fetch file from Blob storage (already uploaded by client)
+    const fileRes = await fetch(blobUrl);
+    if (!fileRes.ok) {
+      return NextResponse.json({ error: `Failed to fetch from Blob: ${fileRes.status}` }, { status: 500 });
     }
 
-    if (!reportDate) {
-      reportDate = new Date().toISOString().split('T')[0];
-    }
+    const buffer = Buffer.from(await fileRes.arrayBuffer());
+    const { rows, info } = parseVendorFile(buffer, fileName);
 
-    const uniqueStores = new Set(allRows.map(r => r.siteCode)).size;
-    const uniqueVendors = new Set(allRows.map(r => r.vendorName)).size;
-    const uniqueProducts = new Set(allRows.map(r => r.articleNumber)).size;
+    const allRows: RawRow[] = rows;
+    const reportDate = info.reportDate || new Date().toISOString().split('T')[0];
 
-    const response: ParseResponse & { blobUrls: string[] } = {
-      files: fileInfos,
+    const response: ParseResponse = {
+      files: [info],
       allRows,
       reportDate,
       totalRows: allRows.length,
-      uniqueStores,
-      uniqueVendors,
-      uniqueProducts,
-      blobUrls,
+      uniqueStores: new Set(allRows.map(r => r.siteCode)).size,
+      uniqueVendors: new Set(allRows.map(r => r.vendorName)).size,
+      uniqueProducts: new Set(allRows.map(r => r.articleNumber)).size,
     };
 
     return NextResponse.json(response);

@@ -1,30 +1,33 @@
 import { NextResponse } from 'next/server';
-import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
+import { generateClientTokenFromReadWriteToken } from '@vercel/blob/client';
 
 export const dynamic = 'force-dynamic';
 
+// Generate a short-lived client token for direct browser → Blob uploads
 export async function POST(req: Request): Promise<NextResponse> {
-  const body = (await req.json()) as HandleUploadBody;
-
   try {
-    const jsonResponse = await handleUpload({
-      body,
-      request: req,
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      onBeforeGenerateToken: async () => ({
-        maximumSizeInBytes: 100 * 1024 * 1024, // 100MB
-      }),
-      onUploadCompleted: async () => {
-        // nothing needed
-      },
+    const { pathname } = (await req.json()) as { pathname: string };
+
+    if (!pathname) {
+      return NextResponse.json({ error: 'Missing pathname' }, { status: 400 });
+    }
+
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token) {
+      return NextResponse.json({ error: 'Blob token not configured' }, { status: 500 });
+    }
+
+    const clientToken = await generateClientTokenFromReadWriteToken({
+      pathname,
+      token,
     });
 
-    return NextResponse.json(jsonResponse);
+    return NextResponse.json({ clientToken });
   } catch (error) {
-    console.error('Upload handler error:', error);
+    console.error('Token generation error:', error);
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 400 },
+      { status: 500 },
     );
   }
 }

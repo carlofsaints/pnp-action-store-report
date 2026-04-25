@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+import { put } from '@vercel/blob/client';
 import { useAuth, authFetch } from '@/lib/useAuth';
 import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
@@ -97,17 +98,38 @@ export default function Home() {
     const fileErrors: string[] = [];
     let anySuccess = false;
 
-    // Parse files one at a time — each file is sent via FormData (under 4.5MB each)
-    // The server also stages the file in Blob for later processing
+    // Upload + parse files one at a time
     for (let i = 0; i < fileArr.length; i++) {
       const file = fileArr[i];
-      setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
 
       try {
-        const fd = new FormData();
-        fd.append('files', file);
+        // Step 1: Get a client token from the server (tiny JSON request)
+        setUploadProgress(`Uploading file ${i + 1} of ${fileArr.length}: ${file.name}`);
+        const pathname = `staging/${Date.now()}-${file.name}`;
+        const tokenRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pathname }),
+        });
+        if (!tokenRes.ok) {
+          fileErrors.push(`${file.name}: Failed to get upload token`);
+          continue;
+        }
+        const { clientToken } = await tokenRes.json();
 
-        const res = await fetch('/api/parse', { method: 'POST', body: fd });
+        // Step 2: Upload file directly to Blob (browser → Blob, no serverless limit)
+        const blob = await put(pathname, file, {
+          access: 'public',
+          token: clientToken,
+        });
+
+        // Step 3: Parse via Blob URL (tiny JSON request to server)
+        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
+        const res = await fetch('/api/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ blobUrl: blob.url, fileName: file.name }),
+        });
         if (!res.ok) {
           const text = await res.text();
           let msg = `${file.name}: ${text.slice(0, 200)}`;
@@ -116,7 +138,7 @@ export default function Home() {
           continue;
         }
 
-        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string; blobUrls: string[] };
+        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string };
 
         if (!data.files[0] || data.allRows.length === 0) {
           fileErrors.push(`${file.name}: No data rows found`);
@@ -131,7 +153,7 @@ export default function Home() {
             fileErrors.push(`${file.name}: Duplicate — already loaded`);
             return prev;
           }
-          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: data.blobUrls[0] }];
+          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: blob.url }];
         });
 
         anySuccess = true;
