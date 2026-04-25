@@ -10,8 +10,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     const jsonResponse = await handleUpload({
       body,
       request: req,
+      token: process.env.BLOB_READ_WRITE_TOKEN,
       onBeforeGenerateToken: async () => ({
-        // No content-type restriction — browsers send varying MIME types for .xlsx
         maximumSizeInBytes: 100 * 1024 * 1024, // 100MB
       }),
       onUploadCompleted: async () => {
@@ -21,6 +21,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     return NextResponse.json(jsonResponse);
   } catch (error) {
+    console.error('Upload handler error:', error);
     return NextResponse.json(
       { error: (error as Error).message },
       { status: 400 },
