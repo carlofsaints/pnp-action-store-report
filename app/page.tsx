@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { upload } from '@vercel/blob/client';
 import { useAuth, authFetch } from '@/lib/useAuth';
 import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
@@ -98,26 +97,17 @@ export default function Home() {
     const fileErrors: string[] = [];
     let anySuccess = false;
 
-    // Upload + parse files one at a time
+    // Parse files one at a time — each file is sent via FormData (under 4.5MB each)
+    // The server also stages the file in Blob for later processing
     for (let i = 0; i < fileArr.length; i++) {
       const file = fileArr[i];
+      setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
 
       try {
-        // Step 1: Upload to Vercel Blob (bypasses 4.5MB serverless function limit)
-        setUploadProgress(`Uploading file ${i + 1} of ${fileArr.length}: ${file.name}`);
-        const blob = await upload(`uploads/${Date.now()}-${file.name}`, file, {
-          access: 'public',
-          handleUploadUrl: '/api/upload',
-        });
+        const fd = new FormData();
+        fd.append('files', file);
 
-        // Step 2: Parse via Blob URL (small JSON request, not the raw file)
-        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
-        const res = await fetch('/api/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ blobUrl: blob.url, fileName: file.name }),
-        });
-
+        const res = await fetch('/api/parse', { method: 'POST', body: fd });
         if (!res.ok) {
           const text = await res.text();
           let msg = `${file.name}: ${text.slice(0, 200)}`;
@@ -126,7 +116,7 @@ export default function Home() {
           continue;
         }
 
-        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string };
+        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string; blobUrls: string[] };
 
         if (!data.files[0] || data.allRows.length === 0) {
           fileErrors.push(`${file.name}: No data rows found`);
@@ -141,7 +131,7 @@ export default function Home() {
             fileErrors.push(`${file.name}: Duplicate — already loaded`);
             return prev;
           }
-          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: blob.url }];
+          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: data.blobUrls[0] }];
         });
 
         anySuccess = true;
