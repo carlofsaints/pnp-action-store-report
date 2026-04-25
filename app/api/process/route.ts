@@ -88,7 +88,15 @@ function countMissing(storeRows: RawRow[], allRows: RawRow[]): number {
   return count;
 }
 
-// ── Main handler — receives FormData with raw files ─────────────────────────
+// ── Main handler — receives JSON with Blob URLs ─────────────────────────────
+
+interface ProcessInput {
+  blobFiles: { blobUrl: string; fileName: string }[];
+  reportDate: string;
+  phantomWeeksReceived: number;
+  phantomWeeksSold: number;
+  actionMode: string;
+}
 
 export async function POST(req: Request) {
   const startTime = Date.now();
@@ -97,30 +105,32 @@ export async function POST(req: Request) {
     const userId = req.headers.get('x-user-id');
     const user = userId ? await findUserById(userId) : null;
 
-    const formData = await req.formData();
-    const files = formData.getAll('files') as File[];
-    const reportDate = formData.get('reportDate') as string || new Date().toISOString().split('T')[0];
-    const phantomWeeksReceived = Number(formData.get('phantomWeeksReceived')) || 4;
-    const phantomWeeksSold = Number(formData.get('phantomWeeksSold')) || 4;
-    const actionMode = (formData.get('actionMode') as string) || 'both';
+    const body = (await req.json()) as ProcessInput;
+    const { blobFiles, reportDate: rd, phantomWeeksReceived: pwr, phantomWeeksSold: pws, actionMode: am } = body;
+    const reportDate = rd || new Date().toISOString().split('T')[0];
+    const phantomWeeksReceived = pwr || 4;
+    const phantomWeeksSold = pws || 4;
+    const actionMode = am || 'both';
 
-    if (files.length === 0) {
+    if (!blobFiles || blobFiles.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
     }
 
-    // Re-parse all files server-side
+    // Fetch and parse all files from Blob storage
     const allRows: RawRow[] = [];
     const parseErrors: string[] = [];
     const filesUploaded: { fileName: string; vendorName: string; rowCount: number }[] = [];
 
-    for (const file of files) {
+    for (const { blobUrl, fileName } of blobFiles) {
       try {
-        const buffer = Buffer.from(await file.arrayBuffer());
-        const { rows, info } = parseVendorFile(buffer, file.name);
+        const fileRes = await fetch(blobUrl);
+        if (!fileRes.ok) throw new Error(`Blob fetch failed: ${fileRes.status}`);
+        const buffer = Buffer.from(await fileRes.arrayBuffer());
+        const { rows, info } = parseVendorFile(buffer, fileName);
         allRows.push(...rows);
         filesUploaded.push({ fileName: info.fileName, vendorName: info.vendorName, rowCount: info.rowCount });
       } catch (e) {
-        parseErrors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+        parseErrors.push(`${fileName}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 

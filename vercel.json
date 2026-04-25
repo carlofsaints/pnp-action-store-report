@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "app/api/parse/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "app/api/process/route.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  }
+}

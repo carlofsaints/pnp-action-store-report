@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+import { upload } from '@vercel/blob/client';
 import { useAuth, authFetch } from '@/lib/useAuth';
 import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
@@ -10,7 +11,7 @@ type Stage = 'idle' | 'parsed' | 'processing' | 'done' | 'error';
 interface LoadedFile {
   info: FileInfo;
   rows: RawRow[];
-  rawFile: File; // keep original for re-sending to /api/process
+  blobUrl: string; // Vercel Blob URL — bypasses 4.5MB serverless limit
 }
 
 // ── Tiny UI helpers ──────────────────────────────────────────────────────────
@@ -97,16 +98,26 @@ export default function Home() {
     const fileErrors: string[] = [];
     let anySuccess = false;
 
-    // Parse files one at a time — failures skip that file, not the whole batch
+    // Upload + parse files one at a time
     for (let i = 0; i < fileArr.length; i++) {
       const file = fileArr[i];
-      setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
 
       try {
-        const fd = new FormData();
-        fd.append('files', file);
+        // Step 1: Upload to Vercel Blob (bypasses 4.5MB serverless function limit)
+        setUploadProgress(`Uploading file ${i + 1} of ${fileArr.length}: ${file.name}`);
+        const blob = await upload(`uploads/${Date.now()}-${file.name}`, file, {
+          access: 'public',
+          handleUploadUrl: '/api/upload',
+        });
 
-        const res = await fetch('/api/parse', { method: 'POST', body: fd });
+        // Step 2: Parse via Blob URL (small JSON request, not the raw file)
+        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
+        const res = await fetch('/api/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ blobUrl: blob.url, fileName: file.name }),
+        });
+
         if (!res.ok) {
           const text = await res.text();
           let msg = `${file.name}: ${text.slice(0, 200)}`;
@@ -130,7 +141,7 @@ export default function Home() {
             fileErrors.push(`${file.name}: Duplicate — already loaded`);
             return prev;
           }
-          return [...prev, { info: data.files[0], rows: data.allRows, rawFile: file }];
+          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: blob.url }];
         });
 
         anySuccess = true;
@@ -198,19 +209,17 @@ export default function Home() {
     setErrorMsg(null);
 
     try {
-      // Send raw files via FormData — avoids JSON payload size limit
-      const fd = new FormData();
-      for (const lf of loadedFiles) {
-        fd.append('files', lf.rawFile);
-      }
-      fd.append('reportDate', reportDate);
-      fd.append('phantomWeeksReceived', String(phantomWeeksReceived));
-      fd.append('phantomWeeksSold', String(phantomWeeksSold));
-      fd.append('actionMode', actionMode);
-
+      // Send Blob URLs (tiny JSON payload) — files already staged in Blob storage
       const res = await authFetch('/api/process', {
         method: 'POST',
-        body: fd,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          blobFiles: loadedFiles.map(lf => ({ blobUrl: lf.blobUrl, fileName: lf.info.fileName })),
+          reportDate,
+          phantomWeeksReceived,
+          phantomWeeksSold,
+          actionMode,
+        }),
       });
 
       if (!res.ok) {
