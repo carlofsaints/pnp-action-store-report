@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { put } from '@vercel/blob/client';
 import { useAuth, authFetch } from '@/lib/useAuth';
+import { parseVendorFileClient } from '@/lib/client-parser';
 import type { FileInfo, ProcessSummary, RawRow, StoreResult } from '@/lib/types';
 
 type Stage = 'idle' | 'parsed' | 'processing' | 'done' | 'error';
@@ -98,49 +98,17 @@ export default function Home() {
     const fileErrors: string[] = [];
     let anySuccess = false;
 
-    // Upload + parse files one at a time
+    // Parse files entirely in the browser — no server call needed
     for (let i = 0; i < fileArr.length; i++) {
       const file = fileArr[i];
+      setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
 
       try {
-        // Step 1: Get a client token from the server (tiny JSON request)
-        setUploadProgress(`Uploading file ${i + 1} of ${fileArr.length}: ${file.name}`);
-        const pathname = `staging/${Date.now()}-${file.name}`;
-        const tokenRes = await fetch('/api/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pathname }),
-        });
-        if (!tokenRes.ok) {
-          fileErrors.push(`${file.name}: Failed to get upload token`);
-          continue;
-        }
-        const { clientToken } = await tokenRes.json();
+        // Read file as ArrayBuffer and parse client-side with SheetJS
+        const arrayBuffer = await file.arrayBuffer();
+        const { rows, info } = parseVendorFileClient(arrayBuffer, file.name);
 
-        // Step 2: Upload file directly to Blob (browser → Blob, no serverless limit)
-        const blob = await put(pathname, file, {
-          access: 'public',
-          token: clientToken,
-        });
-
-        // Step 3: Parse via Blob URL (tiny JSON request to server)
-        setUploadProgress(`Parsing file ${i + 1} of ${fileArr.length}: ${file.name}`);
-        const res = await fetch('/api/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ blobUrl: blob.url, fileName: file.name }),
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          let msg = `${file.name}: ${text.slice(0, 200)}`;
-          try { const j = JSON.parse(text); if (j.error) msg = `${file.name}: ${j.error}`; } catch { /* use raw */ }
-          fileErrors.push(msg);
-          continue;
-        }
-
-        const data = await res.json() as { files: FileInfo[]; allRows: RawRow[]; reportDate: string };
-
-        if (!data.files[0] || data.allRows.length === 0) {
+        if (rows.length === 0) {
           fileErrors.push(`${file.name}: No data rows found`);
           continue;
         }
@@ -148,19 +116,18 @@ export default function Home() {
         // Append to state — check for duplicate filenames
         setLoadedFiles(prev => {
           const existing = prev.map(f => f.info.fileName);
-          const isDup = existing.includes(data.files[0]?.fileName);
-          if (isDup) {
+          if (existing.includes(info.fileName)) {
             fileErrors.push(`${file.name}: Duplicate — already loaded`);
             return prev;
           }
-          return [...prev, { info: data.files[0], rows: data.allRows, blobUrl: blob.url }];
+          return [...prev, { info, rows, blobUrl: '' }];
         });
 
         anySuccess = true;
 
         // Set report date from first successful file if not already set
-        if (!reportDateOverride && data.reportDate) {
-          setReportDateOverride(data.reportDate);
+        if (!reportDateOverride && info.reportDate) {
+          setReportDateOverride(info.reportDate);
         }
       } catch (e) {
         fileErrors.push(`${file.name}: ${e instanceof Error ? e.message : 'Unknown error'}`);
@@ -221,12 +188,45 @@ export default function Home() {
     setErrorMsg(null);
 
     try {
-      // Send Blob URLs (tiny JSON payload) — files already staged in Blob storage
+      // Step 1: Stage all rows in Blob via chunked uploads (each chunk <4MB)
+      const sessionId = `s-${Date.now().toString(36)}`;
+      const CHUNK_SIZE = 8000; // rows per chunk — ~2.5MB JSON each
+
+      setUploadProgress('Staging data for processing...');
+      for (const lf of loadedFiles) {
+        const totalChunks = Math.ceil(lf.rows.length / CHUNK_SIZE);
+        for (let c = 0; c < totalChunks; c++) {
+          const chunk = lf.rows.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
+          const stageRes = await authFetch('/api/stage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionId,
+              fileName: lf.info.fileName,
+              rows: chunk,
+              chunkIndex: c,
+              totalChunks,
+            }),
+          });
+          if (!stageRes.ok) {
+            const text = await stageRes.text();
+            throw new Error(`Staging failed for ${lf.info.fileName}: ${text.slice(0, 200)}`);
+          }
+        }
+      }
+      setUploadProgress(null);
+
+      // Step 2: Trigger processing — tiny JSON payload with just session ID + settings
       const res = await authFetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          blobFiles: loadedFiles.map(lf => ({ blobUrl: lf.blobUrl, fileName: lf.info.fileName })),
+          sessionId,
+          filesMeta: loadedFiles.map(lf => ({
+            fileName: lf.info.fileName,
+            vendorName: lf.info.vendorName,
+            rowCount: lf.info.rowCount,
+          })),
           reportDate,
           phantomWeeksReceived,
           phantomWeeksSold,

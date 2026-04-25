@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Resend } from 'resend';
 import * as XLSX from 'xlsx';
-import { parseVendorFile } from '@/lib/excel-parser';
+import { list, getDownloadUrl } from '@vercel/blob';
 import { buildStoreReport, computeRankings } from '@/lib/report-builder';
 import { buildStoreEmail } from '@/lib/email-builder';
 import { getDriveContext, uploadReport, downloadFile } from '@/lib/graph-iram';
@@ -88,10 +88,11 @@ function countMissing(storeRows: RawRow[], allRows: RawRow[]): number {
   return count;
 }
 
-// ── Main handler — receives JSON with Blob URLs ─────────────────────────────
+// ── Main handler — reads staged rows from Blob ─────────────────────────────
 
 interface ProcessInput {
-  blobFiles: { blobUrl: string; fileName: string }[];
+  sessionId: string;
+  filesMeta: { fileName: string; vendorName: string; rowCount: number }[];
   reportDate: string;
   phantomWeeksReceived: number;
   phantomWeeksSold: number;
@@ -106,32 +107,35 @@ export async function POST(req: Request) {
     const user = userId ? await findUserById(userId) : null;
 
     const body = (await req.json()) as ProcessInput;
-    const { blobFiles, reportDate: rd, phantomWeeksReceived: pwr, phantomWeeksSold: pws, actionMode: am } = body;
+    const { sessionId, filesMeta, reportDate: rd, phantomWeeksReceived: pwr, phantomWeeksSold: pws, actionMode: am } = body;
     const reportDate = rd || new Date().toISOString().split('T')[0];
     const phantomWeeksReceived = pwr || 4;
     const phantomWeeksSold = pws || 4;
     const actionMode = am || 'both';
 
-    if (!blobFiles || blobFiles.length === 0) {
-      return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+    if (!sessionId) {
+      return NextResponse.json({ error: 'Missing sessionId' }, { status: 400 });
     }
 
-    // Fetch and parse all files from Blob storage
+    // Read all staged row chunks from Blob
     const allRows: RawRow[] = [];
     const parseErrors: string[] = [];
-    const filesUploaded: { fileName: string; vendorName: string; rowCount: number }[] = [];
+    const filesUploaded = filesMeta || [];
 
-    for (const { blobUrl, fileName } of blobFiles) {
-      try {
-        const fileRes = await fetch(blobUrl);
-        if (!fileRes.ok) throw new Error(`Blob fetch failed: ${fileRes.status}`);
-        const buffer = Buffer.from(await fileRes.arrayBuffer());
-        const { rows, info } = parseVendorFile(buffer, fileName);
+    try {
+      const { blobs } = await list({ prefix: `staging/${sessionId}/` });
+      for (const blob of blobs) {
+        const downloadUrl = getDownloadUrl(blob.url);
+        const res = await fetch(downloadUrl);
+        if (!res.ok) {
+          parseErrors.push(`Failed to fetch staged chunk: ${blob.pathname}`);
+          continue;
+        }
+        const rows = (await res.json()) as RawRow[];
         allRows.push(...rows);
-        filesUploaded.push({ fileName: info.fileName, vendorName: info.vendorName, rowCount: info.rowCount });
-      } catch (e) {
-        parseErrors.push(`${fileName}: ${e instanceof Error ? e.message : String(e)}`);
       }
+    } catch (e) {
+      return NextResponse.json({ error: `Failed to read staged data: ${e instanceof Error ? e.message : String(e)}` }, { status: 500 });
     }
 
     if (allRows.length === 0) {
